@@ -1,0 +1,57 @@
+name: poutine-bp
+title: poutine
+summary: poutine, a supply chain vulnerability scanner for build pipelines
+description: |
+  Created by BoostSecurity.io, poutine is a security scanner that detects
+  misconfigurations and vulnerabilities in the build pipelines of a repository.
+  It supports parsing CI workflows from GitHub Actions and Gitlab CI/CD. When
+  given an access token with read-level access, poutine can analyze all the
+  repositories of an organization to quickly gain insights into the security
+  posture of the organization's software supply chain.
+license: Apache-2.0
+
+contact:
+  - https://github.com/barryprice
+issues:
+  - https://github.com/barryprice/snap-poutine/issues
+source-code:
+  - https://github.com/boostsecurityio/poutine
+website:
+  - https://github.com/boostsecurityio/poutine
+
+adopt-info: poutine
+confinement: strict
+grade: stable
+base: core26
+
+apps:
+  poutine:
+    command: bin/poutine
+    plugs: [home, network]
+
+parts:
+  poutine:
+    plugin: make
+    source-type: git
+    source: https://github.com/boostsecurityio/poutine
+    source-depth: 1
+    build-packages:
+      - curl
+      - jq
+    build-snaps:
+      - go/latest/stable
+    override-pull: |
+      craftctl default
+      # Pinned upstream release tag. Renovate bumps this line automatically
+      # when boostsecurityio/poutine publishes a new release (see renovate.json).
+      # renovate: datasource=github-releases depName=boostsecurity.io/poutine
+      poutine_version="v1.1.6"
+      # Ensure the pinned tag exists locally (shallow clones may omit it),
+      # then build exactly that release.
+      git fetch --tags --force origin
+      git checkout --detach "${poutine_version}"
+      craftctl set version="${poutine_version#v}"
+    override-build: |
+      make build
+      mkdir ${SNAPCRAFT_PART_INSTALL?}/bin
+      cp -v poutine ${SNAPCRAFT_PART_INSTALL?}/bin/
