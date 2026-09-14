@@ -85,9 +85,11 @@ Every build exercises the **packed tree**, not the build tree, so `apps.poutine.
 - `poutine version` must report exactly the pinned release, tying the binary back to the tag.
 - A repository whose workflow interpolates `github.event.issue.title` must exit with poutine's findings code (`10`) under `--fail-on-violation`.
 - A benign repository must exit `0`, so the gate also fails on a scan that fires indiscriminately.
-- The binary scans this repo's own workflows and must find nothing (skipped when the checkout has no GitHub-parsable origin, e.g. a local path build).
+- The binary scans this repo's own workflows and must find nothing.
 
 Any of these failing aborts the build instead of shipping an unexercised binary.
+
+The last gate runs from the project directory so poutine picks up this repo's committed [`.poutine.yaml`](.poutine.yaml), which skips the findings we have deliberately accepted (the two GitHub Actions we trust: `snapcore/action-build` and `zizmorcore/zizmor-action`). The two synthetic repositories are scanned from a scratch directory with no config, so that skip list cannot mask a regression in either of them — poutine resolves its config relative to the working directory, never relative to the scanned path.
 
 ## Building locally
 

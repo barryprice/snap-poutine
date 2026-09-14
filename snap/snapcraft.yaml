@@ -63,6 +63,10 @@ parts:
       git checkout --detach "${poutine_version}"
       craftctl set version="${poutine_version#v}"
     override-build: |
+      # Build only. The behavioural gates - version check, the smoke scans and
+      # the self-scan - live in override-prime, because they must exercise the
+      # packed tree rather than the build tree.
+      #
       # Upstream's `make build` is a bare `go build -o poutine .`, which leaves
       # main.version at its source default of "development" - goreleaser is what
       # normally injects the tag via `-X main.version=`. Pass it explicitly so
@@ -98,11 +102,10 @@ parts:
       smoke_dir="$(mktemp -d)"
       trap 'rm -rf "${smoke_dir}"' EXIT
 
-      # poutine discovers .poutine.yml / .github/poutine.yml relative to the
-      # *current* directory, so run from the scratch dir to keep the gate
-      # hermetic. No git init is needed: analyze_local falls back to
-      # org=""/repo="local" when a directory has no origin remote.
-      cd "${smoke_dir}"
+      # poutine discovers its config as .poutine.<ext> / .github/poutine.<ext>
+      # relative to the *current working directory* only - never relative to the
+      # scanned path. Each scan below therefore runs from the directory whose
+      # config it should honour.
 
       mkdir -p "${smoke_dir}/vulnerable/.github/workflows"
       cat > "${smoke_dir}/vulnerable/.github/workflows/vulnerable.yml" <<'EOF'
@@ -115,21 +118,25 @@ parts:
             - run: echo "${{ github.event.issue.title }}"
       EOF
 
+      # Run from the scratch dir: there is no config there, so the scan is
+      # unaffected by any skip list and genuinely exercises the rules.
       # --fail-on-violation is what makes findings exit non-zero (10); without
       # it poutine reports findings but still exits 0, so the gate would be
       # vacuous. Note 10 is poutine's only findings code - unlike zizmor's
       # 11-14 severity band. --disable-version-check keeps the once-per-day
       # update call out of the build.
       rc=0
-      findings="$("${poutine}" analyze_local --quiet --disable-version-check \
-          --fail-on-violation "${smoke_dir}/vulnerable" 2>&1)" || rc=$?
+      findings="$(cd "${smoke_dir}" && "${poutine}" analyze_local --quiet \
+          --disable-version-check --fail-on-violation \
+          "${smoke_dir}/vulnerable" 2>&1)" || rc=$?
       if [ "${rc}" -ne 10 ]; then
           printf 'expected a violations exit code (10), got %s:\n%s\n' "${rc}" "${findings}" >&2
           exit 1
       fi
 
       # ... and a workflow with nothing to report must exit clean, so the gate
-      # also fails on a scan that fires indiscriminately.
+      # also fails on a scan that fires indiscriminately. This also runs from
+      # the scratch dir, so it is not neutered by the repo's own skip list.
       mkdir -p "${smoke_dir}/clean/.github/workflows"
       cat > "${smoke_dir}/clean/.github/workflows/clean.yml" <<'EOF'
       on: push
@@ -142,18 +149,24 @@ parts:
       EOF
 
       rc=0
-      clean="$("${poutine}" analyze_local --quiet --disable-version-check \
-          --fail-on-violation "${smoke_dir}/clean" 2>&1)" || rc=$?
+      clean="$(cd "${smoke_dir}" && "${poutine}" analyze_local --quiet \
+          --disable-version-check --fail-on-violation \
+          "${smoke_dir}/clean" 2>&1)" || rc=$?
       if [ "${rc}" -ne 0 ]; then
           printf 'clean repository exited %s:\n%s\n' "${rc}" "${clean}" >&2
           exit 1
       fi
 
-      # Dogfood: scan this repo's own workflows with the binary being packed,
-      # so a rule change that flags our own CI aborts the build.
+      # Dogfood: scan this repo's own workflows with the binary being packed, so
+      # a rule change that flags our own CI aborts the build. Run from the
+      # project dir so poutine picks up the repo's committed .poutine.yaml,
+      # which skips the findings we have deliberately accepted (the snapcore
+      # and zizmorcore actions we trust); without it this step fails on those
+      # two workflows.
       rc=0
-      own="$("${poutine}" analyze_local --quiet --disable-version-check \
-          --fail-on-violation "${CRAFT_PROJECT_DIR}" 2>&1)" || rc=$?
+      own="$(cd "${CRAFT_PROJECT_DIR}" && "${poutine}" analyze_local --quiet \
+          --disable-version-check --fail-on-violation \
+          "${CRAFT_PROJECT_DIR}" 2>&1)" || rc=$?
       if [ "${rc}" -ne 0 ]; then
           printf 'poutine reported findings in this repo (exit %s):\n%s\n' "${rc}" "${own}" >&2
           exit 1
