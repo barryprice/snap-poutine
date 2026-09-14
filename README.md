@@ -15,7 +15,7 @@ sudo snap install poutine-bp
 The snap is named `poutine-bp` (the `-bp` suffix marks it as a community build rather than an upstream publication), but the app itself is `poutine`. Either invoke it as `poutine-bp.poutine`, or add an alias so the command reads like upstream:
 
 ```bash
-sudo snap alias poutine-bp poutine
+sudo snap alias poutine-bp.poutine poutine
 poutine version
 ```
 
