@@ -1,0 +1,7 @@
+skip:
+  - rule: github_action_from_unverified_creator_used
+    purl:
+      # we trust the snapcore actions
+      - pkg:githubactions/snapcore/action-build
+      # we bundle and therefore trust zizmor
+      - pkg:githubactions/zizmorcore/zizmor-action
