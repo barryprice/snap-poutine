@@ -20,14 +20,22 @@ website:
   - https://github.com/boostsecurityio/poutine
 
 adopt-info: poutine
-confinement: strict
-grade: stable
 base: core26
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+  armhf:
+  ppc64el:
+  riscv64:
+  s390x:
 
 apps:
   poutine:
     command: bin/poutine
-    plugs: [home, network]
+    plugs: [home, network, removable-media]
 
 parts:
   poutine:
@@ -39,12 +47,15 @@ parts:
       - curl
       - jq
     build-snaps:
+      # Upstream's go.mod requires go 1.26.0, so this must stay at >= 1.26.
+      # The channel name is not Renovate-trackable; pin to go/1.26/stable
+      # instead of latest if a silent toolchain bump should become reviewable.
       - go/latest/stable
     override-pull: |
       craftctl default
       # Pinned upstream release tag. Renovate bumps this line automatically
       # when boostsecurityio/poutine publishes a new release (see renovate.json).
-      # renovate: datasource=github-releases depName=boostsecurity.io/poutine
+      # renovate: datasource=github-releases depName=boostsecurityio/poutine
       poutine_version="v1.1.6"
       # Ensure the pinned tag exists locally (shallow clones may omit it),
       # then build exactly that release.
@@ -52,6 +63,98 @@ parts:
       git checkout --detach "${poutine_version}"
       craftctl set version="${poutine_version#v}"
     override-build: |
-      make build
+      # Upstream's `make build` is a bare `go build -o poutine .`, which leaves
+      # main.version at its source default of "development" - goreleaser is what
+      # normally injects the tag via `-X main.version=`. Pass it explicitly so
+      # the packed binary self-reports the pinned release instead of
+      # "development", which is what lets override-prime gate on the version.
+      # Read the version back from the snap metadata (set by craftctl in
+      # override-pull) rather than a shell variable, which does not survive
+      # across override steps.
+      version="$(craftctl get version)"
+      go build -trimpath \
+        -ldflags "-s -w -X main.version=${version}" \
+        -o poutine .
       mkdir ${SNAPCRAFT_PART_INSTALL?}/bin
       cp -v poutine ${SNAPCRAFT_PART_INSTALL?}/bin/
+    override-prime: |
+      craftctl default
+
+      # Everything below runs against ${CRAFT_PRIME}, i.e. the exact tree that
+      # gets packed, so apps.poutine.command is proven to resolve too.
+      poutine="${CRAFT_PRIME}/bin/poutine"
+
+      # poutine has no --version flag; the `version` subcommand prints
+      # "Version: <v>\nCommit: <c>\nBuilt At: <d>". The version is injected via
+      # -X main.version in override-build, so this ties the packed binary back
+      # to the pinned tag rather than trusting the checkout.
+      expected="Version: $(craftctl get version)"
+      reported="$("${poutine}" version | head -n1)"
+      if [ "${reported}" != "${expected}" ]; then
+          printf 'expected version %s, got %s\n' "${expected}" "${reported}" >&2
+          exit 1
+      fi
+
+      smoke_dir="$(mktemp -d)"
+      trap 'rm -rf "${smoke_dir}"' EXIT
+
+      # poutine discovers .poutine.yml / .github/poutine.yml relative to the
+      # *current* directory, so run from the scratch dir to keep the gate
+      # hermetic. No git init is needed: analyze_local falls back to
+      # org=""/repo="local" when a directory has no origin remote.
+      cd "${smoke_dir}"
+
+      mkdir -p "${smoke_dir}/vulnerable/.github/workflows"
+      cat > "${smoke_dir}/vulnerable/.github/workflows/vulnerable.yml" <<'EOF'
+      on: issues
+      permissions: {}
+      jobs:
+        echo:
+          runs-on: ubuntu-latest
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      EOF
+
+      # --fail-on-violation is what makes findings exit non-zero (10); without
+      # it poutine reports findings but still exits 0, so the gate would be
+      # vacuous. Note 10 is poutine's only findings code - unlike zizmor's
+      # 11-14 severity band. --disable-version-check keeps the once-per-day
+      # update call out of the build.
+      rc=0
+      findings="$("${poutine}" analyze_local --quiet --disable-version-check \
+          --fail-on-violation "${smoke_dir}/vulnerable" 2>&1)" || rc=$?
+      if [ "${rc}" -ne 10 ]; then
+          printf 'expected a violations exit code (10), got %s:\n%s\n' "${rc}" "${findings}" >&2
+          exit 1
+      fi
+
+      # ... and a workflow with nothing to report must exit clean, so the gate
+      # also fails on a scan that fires indiscriminately.
+      mkdir -p "${smoke_dir}/clean/.github/workflows"
+      cat > "${smoke_dir}/clean/.github/workflows/clean.yml" <<'EOF'
+      on: push
+      permissions: {}
+      jobs:
+        echo:
+          runs-on: ubuntu-latest
+          steps:
+            - run: echo hello
+      EOF
+
+      rc=0
+      clean="$("${poutine}" analyze_local --quiet --disable-version-check \
+          --fail-on-violation "${smoke_dir}/clean" 2>&1)" || rc=$?
+      if [ "${rc}" -ne 0 ]; then
+          printf 'clean repository exited %s:\n%s\n' "${rc}" "${clean}" >&2
+          exit 1
+      fi
+
+      # Dogfood: scan this repo's own workflows with the binary being packed,
+      # so a rule change that flags our own CI aborts the build.
+      rc=0
+      own="$("${poutine}" analyze_local --quiet --disable-version-check \
+          --fail-on-violation "${CRAFT_PROJECT_DIR}" 2>&1)" || rc=$?
+      if [ "${rc}" -ne 0 ]; then
+          printf 'poutine reported findings in this repo (exit %s):\n%s\n' "${rc}" "${own}" >&2
+          exit 1
+      fi
