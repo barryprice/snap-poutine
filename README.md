@@ -89,7 +89,7 @@ Every build exercises the **packed tree**, not the build tree, so `apps.poutine.
 
 Any of these failing aborts the build instead of shipping an unexercised binary.
 
-The last gate runs from the project directory so poutine picks up this repo's committed [`.poutine.yaml`](.poutine.yaml), which skips the findings we have deliberately accepted (the two GitHub Actions we trust: `snapcore/action-build` and `zizmorcore/zizmor-action`). The two synthetic repositories are scanned from a scratch directory with no config, so that skip list cannot mask a regression in either of them — poutine resolves its config relative to the working directory, never relative to the scanned path.
+The self-scan runs against a staged copy of `.github/workflows` rather than the project directory. On a Launchpad build the project directory is snapcraft's working tree, so scanning it recursively also walks `parts/*/src/` and `parts/*/build/` — which include upstream's `scanner/testdata/` corpus of deliberately vulnerable pipelines, and would fail every build. The copy carries this repo's committed [`.poutine.yaml`](.poutine.yaml), which skips the findings we have deliberately accepted (the two GitHub Actions we trust: `snapcore/action-build` and `zizmorcore/zizmor-action`). The two synthetic repositories are scanned from a scratch directory with no config, so that skip list cannot mask a regression in either of them — poutine resolves its config relative to the working directory, never relative to the scanned path.
 
 ## Building locally
 

@@ -104,8 +104,9 @@ parts:
 
       # poutine discovers its config as .poutine.<ext> / .github/poutine.<ext>
       # relative to the *current working directory* only - never relative to the
-      # scanned path. Each scan below therefore runs from the directory whose
-      # config it should honour.
+      # scanned path. The scans below therefore run either from the scratch dir
+      # (no config, so the rules are exercised unmodified) or from the staged
+      # copy that carries the repo's own skip list.
 
       mkdir -p "${smoke_dir}/vulnerable/.github/workflows"
       cat > "${smoke_dir}/vulnerable/.github/workflows/vulnerable.yml" <<'EOF'
@@ -158,15 +159,26 @@ parts:
       fi
 
       # Dogfood: scan this repo's own workflows with the binary being packed, so
-      # a rule change that flags our own CI aborts the build. Run from the
-      # project dir so poutine picks up the repo's committed .poutine.yaml,
-      # which skips the findings we have deliberately accepted (the snapcore
-      # and zizmorcore actions we trust); without it this step fails on those
-      # two workflows.
+      # a rule change that flags our own CI aborts the build.
+      #
+      # Scan a staged copy of .github/workflows plus the committed skip config,
+      # rather than CRAFT_PROJECT_DIR. On a Launchpad build the project dir is
+      # the snapcraft working tree, so a recursive scan there also walks
+      # parts/poutine/{src,build}/scanner/testdata - upstream's deliberately
+      # vulnerable fixture corpus, which trips seven rules and fails every
+      # build. The scan root cannot simply be .github/workflows either: the
+      # workflow parser matches ^\.github/workflows/<file>\.ya?ml$ relative to
+      # the scan root, so that would match nothing and make this check vacuous.
+      mkdir -p "${smoke_dir}/self/.github"
+      cp -r "${CRAFT_PROJECT_DIR}/.github/workflows" "${smoke_dir}/self/.github/"
+      # Carry the skip list across, or the two trusted actions we knowingly
+      # depend on (snapcore/action-build, zizmorcore/zizmor-action) are reported
+      # as coming from unverified creators and the gate fails.
+      cp "${CRAFT_PROJECT_DIR}/.poutine.yaml" "${smoke_dir}/self/"
       rc=0
-      own="$(cd "${CRAFT_PROJECT_DIR}" && "${poutine}" analyze_local --quiet \
+      own="$(cd "${smoke_dir}/self" && "${poutine}" analyze_local --quiet \
           --disable-version-check --fail-on-violation \
-          "${CRAFT_PROJECT_DIR}" 2>&1)" || rc=$?
+          "${smoke_dir}/self" 2>&1)" || rc=$?
       if [ "${rc}" -ne 0 ]; then
           printf 'poutine reported findings in this repo (exit %s):\n%s\n' "${rc}" "${own}" >&2
           exit 1
